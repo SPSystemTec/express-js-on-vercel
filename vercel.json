@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "/api/generate", "dest": "/api/generate.js" }
+  ]
+}
