@@ -1,12 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "index.js", "use": "@vercel/node" }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "index.js"
+  "functions": {
+    "api/generate.js": {
+      "runtime": "nodejs18.x"
     }
+  },
+  "routes": [
+    { "src": "/api/generate", "dest": "/api/generate.js" }
   ]
 }
