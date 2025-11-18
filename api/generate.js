@@ -1,6 +1,8 @@
-export default async function handler(req, res) {
+const OpenAI = require("openai");
+
+module.exports = async (req, res) => {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ error: "Only POST allowed" });
   }
 
   try {
@@ -10,29 +12,24 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Kein Prompt gesendet" });
     }
 
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: "Du bist ein SPS/SCL Generator." },
-          { role: "user", content: prompt }
-        ]
-      })
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
     });
 
-    const data = await openaiRes.json();
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Du bist ein SPS/SCL Code Generator." },
+        { role: "user", content: prompt }
+      ]
+    });
 
-    return res.status(200).json({
-      result: data.choices?.[0]?.message?.content || "Keine Antwort erhalten"
+    res.status(200).json({
+      result: completion.choices[0].message.content
     });
 
   } catch (err) {
-    console.error("API Fehler:", err);
-    return res.status(500).json({ error: err.message });
+    console.error("API ERROR:", err);
+    res.status(500).json({ error: err.message });
   }
-}
+};
