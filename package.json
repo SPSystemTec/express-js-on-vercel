@@ -1,13 +1,9 @@
 {
-  "name": "plc-code-backend",
+  "name": "scl-generator-api",
   "version": "1.0.0",
   "main": "index.js",
-  "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "type": "commonjs",
   "dependencies": {
-    "cors": "latest",
-    "express": "latest"
+    "openai": "4.21.0"
   }
 }
