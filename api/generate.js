@@ -1,6 +1,6 @@
-import OpenAI from "openai";
+const OpenAI = require("openai");
 
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
     if (req.method !== "POST") {
         return res.status(405).json({ error: "Method not allowed" });
     }
@@ -12,15 +12,15 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: "Kein Prompt gesendet" });
         }
 
-        const openai = new OpenAI({
+        const client = new OpenAI({
             apiKey: process.env.OPENAI_API_KEY
         });
 
-        const completion = await openai.chat.completions.create({
+        const completion = await client.chat.completions.create({
             model: "gpt-4.1-mini",
             messages: [
-                { role: "system", content: "Du bist ein SPS/SCL Generator." },
-                { role: "user", content: prompt }
+                { role: "system", content: "Du bist ein SPS/SCL Generator."},
+                { role: "user", content: prompt}
             ]
         });
 
@@ -32,4 +32,4 @@ export default async function handler(req, res) {
         console.error("API Fehler:", err);
         res.status(500).json({ error: err.message });
     }
-}
+};
