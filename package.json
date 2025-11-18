@@ -1,9 +1,0 @@
-{
-  "name": "scl-generator-api",
-  "version": "1.0.0",
-  "main": "index.js",
-  "type": "commonjs",
-  "dependencies": {
-    "openai": "4.21.0"
-  }
-}
