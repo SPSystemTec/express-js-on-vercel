@@ -7,6 +7,7 @@ export default async function handler(req, res) {
 
   try {
     const { prompt } = req.body;
+
     if (!prompt) {
       return res.status(400).json({ error: "Kein Prompt gesendet" });
     }
@@ -19,12 +20,12 @@ export default async function handler(req, res) {
       model: "gpt-4.1-mini",
       messages: [
         { role: "system", content: "Du bist ein SPS/SCL Generator." },
-        { role: "user", content: prompt }
+        { role: "user", content: prompt },
       ]
     });
 
     res.status(200).json({
-      result: completion.choices[0].message.content
+      result: completion.choices[0].message.content,
     });
 
   } catch (err) {
