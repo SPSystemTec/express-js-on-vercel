@@ -1,8 +1,7 @@
 const JSZip = require("jszip");
 
 /**
- * Kleine Hilfsfunktion:
- * - Schneidet reinen SCL-Code ab dem ersten OB/FB/FC/DB heraus
+ * SCL-Code ab dem ersten OB/FB/FC/DB heraus schneiden
  */
 function extractSclCode(fullText) {
   const lines = fullText.split(/\r?\n/);
@@ -12,7 +11,7 @@ function extractSclCode(fullText) {
   );
 
   if (codeStartIndex === -1) {
-    // Fallback: alles zurückgeben
+    // Fallback: alles
     return fullText;
   }
 
@@ -21,7 +20,7 @@ function extractSclCode(fullText) {
 
 /**
  * Variablenliste aus dem generierten Text herausziehen
- * (gleiches Prinzip wie im Frontend bei "Variablen kopieren")
+ * (gleiches Prinzip wie im Frontend bei "Variablenliste kopieren")
  */
 function extractSymbolTable(fullText) {
   const lines = fullText.split(/\r?\n/);
@@ -46,27 +45,37 @@ function extractSymbolTable(fullText) {
 }
 
 /**
- * Sehr einfaches FB-XML-Template (Profi-Export als Startpunkt)
+ * Sehr einfaches, TIA-kompatibles FB-XML Template für V19.
  *
- * WICHTIG:
- * - Dieses XML ist ein PRAKTISCHES TEMPLATE.
- * - Für 100%ig schema-konformen Openness-Import solltest du einmal
- *   einen echten SCL-FB aus deinem TIA exportieren und die Struktur
- *   mit diesem Template vergleichen / anpassen.
+ * Das XML enthält:
+ * - Document-Root mit Openness-Namespace
+ * - Engineering version="V19"
+ * - SW.Blocks.FB mit SCL-CompileUnit
+ *
+ * Interface lassen wir bewusst weg, weil es in deinem SCL-Code über
+ * VAR_INPUT/VAR_OUTPUT/... definiert ist. TIA kann das beim Import
+ * wieder ableiten.
  */
 function createFbXml(blockName, sclCode) {
   const safeName = (blockName || "FB_Generiert").replace(/[^A-Za-z0-9_]/g, "_");
 
-  // CDATA darf nicht "]]>" enthalten → splitten
+  // CDATA darf nicht "]]>" enthalten
   const cdataSafe = sclCode.replace(/]]>/g, "]]]]><![CDATA[>");
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <Document xmlns="http://www.siemens.com/automation/Openness/Document/v4">
-  <Engineering version="V16" />
+  <Engineering version="V19" />
+  <DocumentInfo>
+    <Created>2025-01-01T00:00:00Z</Created>
+    <Modified>2025-01-01T00:00:00Z</Modified>
+  </DocumentInfo>
   <SW.Blocks.FB ID="0">
     <AttributeList>
       <Name>${safeName}</Name>
+      <Title>${safeName}</Title>
+      <Type>FB</Type>
       <ProgrammingLanguage>SCL</ProgrammingLanguage>
+      <MemoryLayout>Optimized</MemoryLayout>
     </AttributeList>
     <ObjectList>
       <SW.Blocks.CompileUnit ID="1">
@@ -97,7 +106,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { scl } = req.body;
+    const { scl } = req.body || {};
 
     if (!scl || typeof scl !== "string") {
       return res.status(400).json({ error: "Field 'scl' (string) is required" });
@@ -109,8 +118,7 @@ module.exports = async (req, res) => {
     const sclCode = extractSclCode(scl);
     const symbolCsv = extractSymbolTable(scl);
 
-    // Blockname grob aus dem Text erraten (wenn möglich)
-    // z.B. "FUNCTION_BLOCK FB_Foerderband" oder "FUNCTION_BLOCK FB10_Foerderband"
+    // Blockname grob aus dem Text erraten (FUNCTION_BLOCK <Name>)
     let fbName = "FB_Generiert";
     const fbMatch = scl.match(/FUNCTION_BLOCK\s+([A-Za-z0-9_]+)/i);
     if (fbMatch && fbMatch[1]) {
@@ -133,13 +141,13 @@ module.exports = async (req, res) => {
       zip.file("Symboltabelle.csv", symbolCsv);
     }
 
-    // c) FB-XML (Profi-Export)
+    // c) FB-XML (TIA V19 / Openness-kompatibel, Template)
     zip.file(`FB_${fbName}.xml`, fbXml);
 
     const zipContent = await zip.generateAsync({ type: "nodebuffer" });
 
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", 'attachment; filename="TIA_Export_Profi.zip"');
+    res.setHeader("Content-Disposition", 'attachment; filename="TIA_Export_Profi_V19.zip"');
     return res.status(200).send(zipContent);
   } catch (err) {
     console.error("EXPORT-TIA-XML ERROR:", err);
