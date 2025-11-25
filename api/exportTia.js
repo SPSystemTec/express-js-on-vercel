@@ -1,4 +1,4 @@
-const JSZip = require("jszip");
+import JSZip from "jszip";
 
 /**
  * SCL-Code ab dem ersten OB/FB/FC/DB heraus schneiden
@@ -11,7 +11,6 @@ function extractSclCode(fullText) {
   );
 
   if (codeStartIndex === -1) {
-    // Fallback: alles
     return fullText;
   }
 
@@ -19,8 +18,7 @@ function extractSclCode(fullText) {
 }
 
 /**
- * Variablenliste aus dem generierten Text herausziehen
- * (gleiches Prinzip wie im Frontend bei "Variablenliste kopieren")
+ * Variablenliste extrahieren
  */
 function extractSymbolTable(fullText) {
   const lines = fullText.split(/\r?\n/);
@@ -28,9 +26,7 @@ function extractSymbolTable(fullText) {
     l.trim().toLowerCase().startsWith("name;datentyp;richtung;kommentar")
   );
 
-  if (headerIndex === -1) {
-    return null;
-  }
+  if (headerIndex === -1) return null;
 
   const symbolLines = [];
   for (let i = headerIndex; i < lines.length; i++) {
@@ -45,21 +41,11 @@ function extractSymbolTable(fullText) {
 }
 
 /**
- * Sehr einfaches, TIA-kompatibles FB-XML Template für V19.
- *
- * Das XML enthält:
- * - Document-Root mit Openness-Namespace
- * - Engineering version="V19"
- * - SW.Blocks.FB mit SCL-CompileUnit
- *
- * Interface lassen wir bewusst weg, weil es in deinem SCL-Code über
- * VAR_INPUT/VAR_OUTPUT/... definiert ist. TIA kann das beim Import
- * wieder ableiten.
+ * XML für TIA V19 erzeugen
  */
 function createFbXml(blockName, sclCode) {
   const safeName = (blockName || "FB_Generiert").replace(/[^A-Za-z0-9_]/g, "_");
 
-  // CDATA darf nicht "]]>" enthalten
   const cdataSafe = sclCode.replace(/]]>/g, "]]]]><![CDATA[>");
 
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -91,10 +77,13 @@ ${cdataSafe}
 </Document>`;
 }
 
-module.exports = async (req, res) => {
-  // CORS wie in generate.js
+/**
+ * API Handler (Vercel)
+ */
+export default async function handler(req, res) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
@@ -112,36 +101,18 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Field 'scl' (string) is required" });
     }
 
-    // ------------------------------------------------------------------
-    // 1) Teile aus dem generierten Text extrahieren
-    // ------------------------------------------------------------------
     const sclCode = extractSclCode(scl);
     const symbolCsv = extractSymbolTable(scl);
 
-    // Blockname grob aus dem Text erraten (FUNCTION_BLOCK <Name>)
     let fbName = "FB_Generiert";
     const fbMatch = scl.match(/FUNCTION_BLOCK\s+([A-Za-z0-9_]+)/i);
-    if (fbMatch && fbMatch[1]) {
-      fbName = fbMatch[1];
-    }
+    if (fbMatch?.[1]) fbName = fbMatch[1];
 
-    // FB-XML erzeugen
     const fbXml = createFbXml(fbName, sclCode);
 
-    // ------------------------------------------------------------------
-    // 2) ZIP bauen
-    // ------------------------------------------------------------------
     const zip = new JSZip();
-
-    // a) kompletter SCL-Teil
     zip.file("SCL_Programm.scl", sclCode);
-
-    // b) Symboltabelle, falls vorhanden
-    if (symbolCsv) {
-      zip.file("Symboltabelle.csv", symbolCsv);
-    }
-
-    // c) FB-XML (TIA V19 / Openness-kompatibel, Template)
+    if (symbolCsv) zip.file("Symboltabelle.csv", symbolCsv);
     zip.file(`FB_${fbName}.xml`, fbXml);
 
     const zipContent = await zip.generateAsync({ type: "nodebuffer" });
@@ -149,6 +120,7 @@ module.exports = async (req, res) => {
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", 'attachment; filename="TIA_Export_Profi_V19.zip"');
     return res.status(200).send(zipContent);
+
   } catch (err) {
     console.error("EXPORT-TIA-XML ERROR:", err);
     return res.status(500).json({
@@ -156,4 +128,4 @@ module.exports = async (req, res) => {
       details: err.message,
     });
   }
-};
+}
