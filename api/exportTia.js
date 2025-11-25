@@ -1,8 +1,29 @@
-import type { NextApiRequest, NextApiResponse } from "next";
 import JSZip from "jszip";
 
+/* ----------- Body korrekt einlesen (Vercel Pages API!) ----------- */
+async function readBody(req) {
+  return new Promise((resolve, reject) => {
+    try {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString();
+      });
+
+      req.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (err) {
+          resolve({});
+        }
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 /* 1) Nur SCL-Inhalt (Umlaute entfernen) */
-function sanitizeSCL(text: string) {
+function sanitizeSCL(text) {
   if (!text) return "";
   return text
     .replace(/ä/g, "ae")
@@ -15,11 +36,11 @@ function sanitizeSCL(text: string) {
 }
 
 /* 2) Blöcke extrahieren */
-function extractBlocks(fullText: string) {
-  const blocks: { type: string; name: string; content: string }[] = [];
+function extractBlocks(fullText) {
+  const blocks = [];
   const lines = fullText.split(/\r?\n/);
 
-  let current: { type: string; name: string; content: string } | null = null;
+  let current = null;
 
   const startRegex =
     /^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)\s+([A-Za-z0-9_]+)/;
@@ -51,12 +72,12 @@ function extractBlocks(fullText: string) {
 }
 
 /* 3) XML je Block bauen */
-function buildXml(block: { type: string; name: string; content: string }) {
+function buildXml(block) {
   const name = block.name;
   const type = block.type;
   const clean = sanitizeSCL(block.content).replace(/]]>/g, "]]]]><![CDATA[>");
 
-  const xmlTypeMap: Record<string, string> = {
+  const xmlTypeMap = {
     ORGANIZATION_BLOCK: "OB",
     FUNCTION_BLOCK: "FB",
     FUNCTION: "FC",
@@ -89,7 +110,7 @@ ${clean}
 }
 
 /* 4) Symboltabelle extrahieren */
-function extractSymbolTable(text: string) {
+function extractSymbolTable(text) {
   const lines = text.split(/\r?\n/);
   const head = lines.findIndex((l) =>
     l.toLowerCase().startsWith("name;datentyp;richtung;kommentar")
@@ -97,7 +118,7 @@ function extractSymbolTable(text: string) {
 
   if (head === -1) return null;
 
-  const arr: string[] = [];
+  const arr = [];
   for (let i = head; i < lines.length; i++) {
     const l = lines[i];
     if (!l.includes(";")) break;
@@ -107,25 +128,22 @@ function extractSymbolTable(text: string) {
   return arr.join("\r\n");
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+/* -------------- Haupt-API Handler -------------------------------- */
+export default async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "POST") {
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST")
     return res.status(405).json({ error: "Only POST allowed" });
-  }
 
   try {
-    const { scl } = req.body || {};
+    // Body korrekt einlesen!
+    const body = await readBody(req);
+    const scl = body.scl;
+
     if (!scl || typeof scl !== "string") {
       return res.status(400).json({ error: "Missing scl" });
     }
@@ -137,16 +155,13 @@ export default async function handler(
 
     const zip = new JSZip();
 
-    // SCL & XML je Block
     blocks.forEach((block) => {
       zip.file(`${block.name}.scl`, sanitizeSCL(block.content));
       zip.file(`${block.name}.xml`, buildXml(block));
     });
 
     const symbols = extractSymbolTable(scl);
-    if (symbols) {
-      zip.file("Symboltabelle.csv", symbols);
-    }
+    if (symbols) zip.file("Symboltabelle.csv", symbols);
 
     const buffer = await zip.generateAsync({ type: "nodebuffer" });
 
@@ -157,8 +172,8 @@ export default async function handler(
     );
 
     return res.status(200).send(buffer);
-  } catch (err: any) {
+  } catch (err) {
     console.error("EXPORT ERROR:", err);
-    return res.status(500).json({ error: err.message || "Internal error" });
+    return res.status(500).json({ error: err.message });
   }
 }
