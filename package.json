@@ -1,16 +1,9 @@
 {
-  "name": "scl-generator-api",
+  "name": "express-js-on-vercel",
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "openai": "^4.26.0"
-  }
-}
-
-{
-  "name": "express-js-on-vercel",
-  "version": "1.0.0",
-  "dependencies": {
+    "openai": "^4.26.0",
     "jszip": "^3.10.1"
   }
 }
