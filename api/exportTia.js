@@ -20,11 +20,13 @@ function sanitizeUmlauts(text) {
 // SCL-Code ab OB/FB/FC/DB schneiden
 // ==============================
 function extractSclCode(fullText) {
-  const lines = fullText.split(/\r?\n/);
-  const index = lines.findIndex((line) =>
-    /(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)/i.test(line)
-  );
-  return index === -1 ? fullText : lines.slice(index).join("\r\n");
+ const codeLines = fullText
+    .split(/\r?\n/)
+    .filter((line) =>
+      /^ *(ORGANIZATION_BLOCK|END_ORGANIZATION_BLOCK|FUNCTION_BLOCK|END_FUNCTION_BLOCK|DATA_BLOCK|END_DATA_BLOCK|VAR_|BEGIN|END_|[A-Za-z0-9_].*:)/.test(line)
+    );
+
+  return codeLines.join("\r\n");
 }
 
 // ==============================
