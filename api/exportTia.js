@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 
-/* -------- BODY PARSER FÜR VERCEL PAGES API -------- */
+/* ---------- Body-Parser für Vercel Pages API ---------- */
 async function readBody(req) {
   return new Promise((resolve) => {
     let body = "";
@@ -16,8 +16,8 @@ async function readBody(req) {
 }
 
 /* ============================================================
-   1) UMLAUT FILTER
-   ============================================================ */
+   1) UMLAUT-FILTER
+============================================================ */
 function sanitizeUmlauts(text) {
   if (!text) return "";
   return text
@@ -30,90 +30,120 @@ function sanitizeUmlauts(text) {
     .replace(/ß/g, "ss");
 }
 
+function makeSafeName(name) {
+  return sanitizeUmlauts(name || "")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/^_+/, "") || "Block";
+}
+
 /* ============================================================
    2) BAUSTEIN-PARSER
-   ============================================================ */
-function splitSclIntoBlocks(fullText) {
+============================================================ */
+function splitBlocks(fullText) {
   const lines = fullText.split(/\r?\n/);
-
   const blocks = [];
   let current = null;
 
-  for (let rawLine of lines) {
-    const line = rawLine.trimEnd();
+  const startPatterns = [
+    { type: "OB", regex: /^ *ORGANIZATION_BLOCK\s+([A-Za-z0-9_]+)/i },
+    { type: "FB", regex: /^ *FUNCTION_BLOCK\s+([A-Za-z0-9_]+)/i },
+    { type: "FC", regex: /^ *FUNCTION\s+([A-Za-z0-9_]+)/i },
+    { type: "DB", regex: /^ *DATA_BLOCK\s+([A-Za-z0-9_]+)/i },
+  ];
 
-    const startMatch = line.match(
-      /^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)\s+([A-Za-z0-9_]+)/
-    );
+  const endPatterns = {
+    OB: /^ *END_ORGANIZATION_BLOCK\b/i,
+    FB: /^ *END_FUNCTION_BLOCK\b/i,
+    FC: /^ *END_FUNCTION\b/i,
+    DB: /^ *END_DATA_BLOCK\b/i,
+  };
 
-    if (startMatch) {
-      if (current) blocks.push(current);
+  for (const raw of lines) {
+    const line = raw.trimEnd();
 
-      current = {
-        type: startMatch[1],
-        name: startMatch[2],
-        lines: [line]
-      };
+    if (!current) {
+      for (const sp of startPatterns) {
+        const m = line.match(sp.regex);
+        if (m) {
+          current = {
+            type: sp.type,
+            name: makeSafeName(m[1]),
+            lines: [line],
+          };
+          break;
+        }
+      }
       continue;
     }
 
-    if (current) {
-      current.lines.push(line);
+    current.lines.push(line);
 
-      if (/^END_/.test(line)) {
-        blocks.push(current);
-        current = null;
-      }
+    const endRe = endPatterns[current.type];
+    if (endRe && endRe.test(line)) {
+      blocks.push(current);
+      current = null;
     }
   }
 
+  if (current) blocks.push(current);
   return blocks;
 }
 
 /* ============================================================
-   3) XML GENERATOR FÜR TIA BLOCKTYPEN
-   ============================================================ */
-function createXml(block, sclCode) {
-  const xmlTypeMap = {
-    ORGANIZATION_BLOCK: "OB",
-    FUNCTION_BLOCK: "FB",
-    FUNCTION: "FC",
-    DATA_BLOCK: "DB"
-  };
+   3) SYMBOLTABELLE
+============================================================ */
+function extractSymbolTable(fullText) {
+  const lines = fullText.split(/\r?\n/);
+  const start = lines.findIndex((l) =>
+    l.trim().toLowerCase().startsWith("name;datentyp;richtung;kommentar")
+  );
 
-  const type = xmlTypeMap[block.type] || "FB";
-  const safeName = block.name.replace(/[^A-Za-z0-9_]/g, "_");
-  const cdata = sclCode.replace(/]]>/g, "]]]]><![CDATA[>");
+  if (start === -1) return null;
+
+  const list = [];
+
+  for (let i = start; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (!l || !l.includes(";")) break;
+    list.push(l);
+  }
+
+  return list.length ? list.join("\r\n") : null;
+}
+
+/* ============================================================
+   4) XML FB GENERATOR
+============================================================ */
+function createFbXml(blockName, sclCode) {
+  const safe = makeSafeName(blockName);
+  const safeCode = sclCode.replace(/]]>/g, "]]]]><![CDATA[>");
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <Document xmlns="http://www.siemens.com/automation/Openness/Document/v4">
   <Engineering version="V19" />
-  <SW.Blocks.${type} ID="0">
+  <SW.Blocks.FB ID="0">
     <AttributeList>
-      <Name>${safeName}</Name>
+      <Name>${safe}</Name>
       <ProgrammingLanguage>SCL</ProgrammingLanguage>
       <MemoryLayout>Optimized</MemoryLayout>
     </AttributeList>
     <ObjectList>
       <SW.Blocks.CompileUnit ID="1">
-        <AttributeList>
-          <ProgrammingLanguage>SCL</ProgrammingLanguage>
-        </AttributeList>
         <Source><![CDATA[
-${cdata}
+${safeCode}
         ]]></Source>
       </SW.Blocks.CompileUnit>
     </ObjectList>
-  </SW.Blocks.${type}>
+  </SW.Blocks.FB>
 </Document>`;
 }
 
 /* ============================================================
-   4) API HANDLER
-   ============================================================ */
+   5) API HANDLER
+============================================================ */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -121,45 +151,51 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Only POST allowed" });
 
   try {
-    /* ---------- Body korrekt lesen ---------- */
+    /* 🔥 WICHTIG: Body korrekt lesen */
     const body = await readBody(req);
     const scl = body.scl;
 
-    if (!scl) return res.status(400).json({ error: "Field 'scl' is required" });
+    if (!scl || typeof scl !== "string")
+      return res.status(400).json({ error: "Field 'scl' (string) is required" });
 
-    /* ---------- Umlaute entfernen ---------- */
-    const cleaned = sanitizeUmlauts(scl);
+    const clean = sanitizeUmlauts(scl);
+    const blocks = splitBlocks(clean);
+    const symbolCsv = extractSymbolTable(clean);
 
-    /* ---------- Blöcke extrahieren ---------- */
-    const blocks = splitSclIntoBlocks(cleaned);
-    if (!blocks.length) {
-      return res.status(400).json({ error: "No TIA blocks found." });
-    }
+    if (!blocks.length)
+      return res.status(400).json({
+        error: "Keine TIA-Bausteine erkannt. OB / FB / FC / DB fehlen.",
+      });
 
-    /* ---------- ZIP erzeugen ---------- */
     const zip = new JSZip();
+    const sclFolder = zip.folder("SCL");
+    const xmlFolder = zip.folder("XML");
 
     for (const block of blocks) {
-      const content = block.lines.join("\r\n");
+      const code = block.lines.join("\r\n");
+      sclFolder.file(`${block.name}.scl`, code);
 
-      zip.file(`${block.name}.scl`, content);
-
-      const xml = createXml(block, content);
-      zip.file(`${block.name}.xml`, xml);
+      if (block.type === "FB") {
+        const xml = createFbXml(block.name, code);
+        xmlFolder.file(`${block.name}.xml`, xml);
+      }
     }
 
-    const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+    if (symbolCsv) {
+      zip.file("Symboltabelle.csv", sanitizeUmlauts(symbolCsv));
+    }
+
+    const buffer = await zip.generateAsync({ type: "nodebuffer" });
 
     res.setHeader("Content-Type", "application/zip");
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="TIA_Export_V19.zip"'
+      'attachment; filename="TIA_Export_Profi_V19.zip"'
     );
 
-    return res.status(200).send(zipBuffer);
-
+    return res.status(200).send(buffer);
   } catch (err) {
     console.error("EXPORT ERROR:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 }
