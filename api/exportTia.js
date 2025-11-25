@@ -1,10 +1,11 @@
 import JSZip from "jszip";
 
-/* ============================================================
-   1) UMLAUT-FILTER (TIA-SICHER)
-   ============================================================ */
+/* ============================================
+   1) UMLAUT-FILTER (TIA-sicher)
+   ============================================ */
 function sanitizeUmlauts(text) {
   if (!text) return "";
+
   return text
     .replace(/ä/g, "ae")
     .replace(/ö/g, "oe")
@@ -15,55 +16,79 @@ function sanitizeUmlauts(text) {
     .replace(/ß/g, "ss");
 }
 
-/* ============================================================
-   2) BAUSTEIN-PARSER
-   Erkennt OB / FB / DB und trennt sie korrekt
-   ============================================================ */
-function splitSclIntoBlocks(fullText) {
-  const lines = fullText.split(/\r?\n/);
+/* ============================================
+   2) SCL-SANITIZER
+   - schneidet Kopf & Symboltabelle ab
+   - ersetzt END_VAR_INPUT / END_VAR_OUTPUT ...
+   ============================================ */
+function sanitizeSclCode(fullText) {
+  if (!fullText) return "";
 
-  const blocks = [];
-  let current = null;
+  // Schritt 1: Umlaute raus
+  let txt = sanitizeUmlauts(fullText);
 
-  for (let rawLine of lines) {
-    const line = rawLine.trimEnd();
+  const lines = txt.split(/\r?\n/);
 
-    // Bausteinstart erkennen
-    const startMatch = line.match(/^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|DATA_BLOCK)\s+([A-Za-z0-9_]+)/);
+  // 1) Alles VOR dem ersten Block (OB/FB/DB) rausschneiden
+  let startIndex = lines.findIndex((line) =>
+    /^\s*(ORGANIZATION_BLOCK|FUNCTION_BLOCK|DATA_BLOCK)\b/.test(line)
+  );
+  if (startIndex === -1) {
+    // keine Bausteine gefunden → ganze Datei zurück (aber das ist eh schräg)
+    startIndex = 0;
+  }
+  let relevant = lines.slice(startIndex);
 
-    if (startMatch) {
-      if (current) {
-        blocks.push(current);
-      }
-
-      current = {
-        type: startMatch[1],
-        name: startMatch[2],
-        lines: [line]
-      };
-      continue;
-    }
-
-    // INNERHALB eines Bausteins
-    if (current) {
-      current.lines.push(line);
-
-      // Ende erkennen
-      if (/^END_/.test(line)) {
-        blocks.push(current);
-        current = null;
-      }
-    }
+  // 2) Symboltabelle / Hinweis am Ende abschneiden
+  const symIndex = relevant.findIndex((l) =>
+    l.trim().toLowerCase().startsWith("name;datentyp;richtung;kommentar")
+  );
+  if (symIndex !== -1) {
+    relevant = relevant.slice(0, symIndex);
   }
 
-  return blocks;
+  let sclCode = relevant.join("\r\n");
+
+  // 3) Typische KI-SCL-Syntaxfehler korrigieren
+  // END_VAR_INPUT / END_VAR_OUTPUT / END_VAR_IN_OUT → END_VAR
+  sclCode = sclCode.replace(/\bEND_VAR_INPUT\b/g, "END_VAR");
+  sclCode = sclCode.replace(/\bEND_VAR_OUTPUT\b/g, "END_VAR");
+  sclCode = sclCode.replace(/\bEND_VAR_IN_OUT\b/g, "END_VAR");
+  sclCode = sclCode.replace(/\bEND_VAR_INOUT\b/g, "END_VAR");
+
+  // Falls irgendwo "VAR_IN_OUT" statt "VAR_IN_OUT" / "VAR_INOUT" Chaos entsteht,
+  // könnte man hier auch noch normalisieren, z.B.:
+  // sclCode = sclCode.replace(/\bVAR_IN_OUT\b/g, "VAR_IN_OUT");
+
+  return sclCode;
 }
 
-/* ============================================================
-   3) FB-XML Generator (TIA V19)
-   ============================================================ */
+/* ============================================
+   3) Variablenliste extrahieren (für CSV)
+   ============================================ */
+function extractSymbolTable(fullText) {
+  if (!fullText) return null;
+
+  const lines = fullText.split(/\r?\n/);
+  const headerIndex = lines.findIndex((l) =>
+    l.trim().toLowerCase().startsWith("name;datentyp;richtung;kommentar")
+  );
+  if (headerIndex === -1) return null;
+
+  const result = [];
+  for (let i = headerIndex; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || !line.includes(";")) break;
+    result.push(line);
+  }
+  return result.length ? sanitizeUmlauts(result.join("\r\n")) : null;
+}
+
+/* ============================================
+   4) XML für TIA (FB) erstellen – V19-kompatibel
+   ============================================ */
 function createFbXml(blockName, sclCode) {
-  const safeName = blockName.replace(/[^A-Za-z0-9_]/g, "_");
+  const safeName = (blockName || "FB_Generiert").replace(/[^A-Za-z0-9_]/g, "_");
   const cdataSafe = sclCode.replace(/]]>/g, "]]]]><![CDATA[>");
 
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -95,66 +120,61 @@ ${cdataSafe}
 </Document>`;
 }
 
-/* ============================================================
-   4) API Handler
-   ============================================================ */
+/* ============================================
+   5) API Handler (/api/exportTia)
+   ============================================ */
 export default async function handler(req, res) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")
+  if (req.method !== "POST") {
     return res.status(405).json({ error: "Only POST allowed" });
+  }
 
   try {
     const { scl } = req.body || {};
-    if (!scl) return res.status(400).json({ error: "Field 'scl' is required" });
-
-    /* ==========================================
-       1) Umlaute entfernen
-       ========================================== */
-    const cleaned = sanitizeUmlauts(scl);
-
-    /* ==========================================
-       2) Bausteine extrahieren
-       ========================================== */
-    const blocks = splitSclIntoBlocks(cleaned);
-
-    if (!blocks.length) {
-      return res.status(400).json({ error: "No TIA blocks found in SCL text." });
+    if (!scl || typeof scl !== "string") {
+      return res.status(400).json({ error: "Field 'scl' (string) is required" });
     }
 
-    /* ==========================================
-       3) ZIP erzeugen
-       ========================================== */
+    // 1) SCL sanitizen (Umlaute, Kopf, Symboltabelle, END_VAR_* usw.)
+    const sclCode = sanitizeSclCode(scl);
+
+    // 2) Symboltabelle rausziehen
+    const symbolCsv = extractSymbolTable(scl);
+
+    // 3) FB-Namen grob aus dem Text erraten
+    let fbName = "FB_Generiert";
+    const fbMatch = scl.match(/FUNCTION_BLOCK\s+([A-Za-z0-9_]+)/i);
+    if (fbMatch?.[1]) {
+      fbName = sanitizeUmlauts(fbMatch[1]);
+    }
+
+    const fbXml = createFbXml(fbName, sclCode);
+
+    // 4) ZIP bauen
     const zip = new JSZip();
-
-    for (const block of blocks) {
-      const fileName = `${block.name}.scl`;
-      const sclBlockText = block.lines.join("\r\n");
-
-      zip.file(fileName, sclBlockText);
-
-      // Nur FBs bekommen XML
-      if (block.type === "FUNCTION_BLOCK") {
-        const xml = createFbXml(block.name, sclBlockText);
-        zip.file(`${block.name}.xml`, xml);
-      }
-    }
+    zip.file("SCL_Programm.scl", sclCode);
+    if (symbolCsv) zip.file("Symboltabelle.csv", symbolCsv);
+    zip.file(`FB_${fbName}.xml`, fbXml);
 
     const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
 
     res.setHeader("Content-Type", "application/zip");
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="TIA_Export_Blocks_V19.zip"'
+      'attachment; filename="TIA_Export_Profi_V19.zip"'
     );
-
     return res.status(200).send(zipBuffer);
 
   } catch (err) {
     console.error("EXPORT ERROR:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: "Internal server error",
+      details: err.message,
+    });
   }
 }
