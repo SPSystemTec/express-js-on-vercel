@@ -1,9 +1,8 @@
+import type { NextApiRequest, NextApiResponse } from "next";
 import JSZip from "jszip";
 
-/* ============================================================
-   1) Umlaute nur IM SCL, NICHT im Block-Header löschen
-   ============================================================ */
-function sanitizeSCL(text) {
+/* 1) Nur SCL-Inhalt (Umlaute entfernen) */
+function sanitizeSCL(text: string) {
   if (!text) return "";
   return text
     .replace(/ä/g, "ae")
@@ -15,14 +14,12 @@ function sanitizeSCL(text) {
     .replace(/ß/g, "ss");
 }
 
-/* ============================================================
-   2) Blöcke korrekt erkennen
-   ============================================================ */
-function extractBlocks(fullText) {
-  const blocks = [];
+/* 2) Blöcke extrahieren */
+function extractBlocks(fullText: string) {
+  const blocks: { type: string; name: string; content: string }[] = [];
   const lines = fullText.split(/\r?\n/);
 
-  let current = null;
+  let current: { type: string; name: string; content: string } | null = null;
 
   const startRegex =
     /^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)\s+([A-Za-z0-9_]+)/;
@@ -34,7 +31,6 @@ function extractBlocks(fullText) {
     const start = line.match(startRegex);
     if (start) {
       if (current) blocks.push(current);
-
       current = {
         type: start[1],
         name: start[2],
@@ -45,27 +41,22 @@ function extractBlocks(fullText) {
 
     if (current) {
       current.content += line + "\r\n";
-
       if (endRegex.test(line)) {
         blocks.push(current);
         current = null;
       }
     }
   }
-
   return blocks;
 }
 
-/* ============================================================
-   3) XML erstellen passend zum Block-Typ
-   ============================================================ */
-function buildXml(block) {
+/* 3) XML je Block bauen */
+function buildXml(block: { type: string; name: string; content: string }) {
   const name = block.name;
   const type = block.type;
-  const clean = sanitizeSCL(block.content)
-    .replace(/]]>/g, "]]]]><![CDATA[>");
+  const clean = sanitizeSCL(block.content).replace(/]]>/g, "]]]]><![CDATA[>");
 
-  const xmlTypeMap = {
+  const xmlTypeMap: Record<string, string> = {
     ORGANIZATION_BLOCK: "OB",
     FUNCTION_BLOCK: "FB",
     FUNCTION: "FC",
@@ -77,20 +68,17 @@ function buildXml(block) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <Document xmlns="http://www.siemens.com/automation/Openness/Document/v4">
   <Engineering version="V19" />
-
   <SW.Blocks.${xmlType} ID="0">
     <AttributeList>
       <Name>${name}</Name>
       <ProgrammingLanguage>SCL</ProgrammingLanguage>
       <MemoryLayout>Optimized</MemoryLayout>
     </AttributeList>
-
     <ObjectList>
       <SW.Blocks.CompileUnit ID="1">
         <AttributeList>
           <ProgrammingLanguage>SCL</ProgrammingLanguage>
         </AttributeList>
-
         <Source><![CDATA[
 ${clean}
         ]]></Source>
@@ -100,18 +88,16 @@ ${clean}
 </Document>`;
 }
 
-/* ============================================================
-   4) Symboltabelle extrahieren
-   ============================================================ */
-function extractSymbolTable(text) {
+/* 4) Symboltabelle extrahieren */
+function extractSymbolTable(text: string) {
   const lines = text.split(/\r?\n/);
-  const head = lines.findIndex(l =>
+  const head = lines.findIndex((l) =>
     l.toLowerCase().startsWith("name;datentyp;richtung;kommentar")
   );
 
   if (head === -1) return null;
 
-  const arr = [];
+  const arr: string[] = [];
   for (let i = head; i < lines.length; i++) {
     const l = lines[i];
     if (!l.includes(";")) break;
@@ -121,37 +107,46 @@ function extractSymbolTable(text) {
   return arr.join("\r\n");
 }
 
-/* ============================================================
-   5) API Handler
-   ============================================================ */
-export default async function handler(req, res) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
 
-  if (req.method !== "POST")
+  if (req.method !== "POST") {
     return res.status(405).json({ error: "Only POST allowed" });
+  }
 
   try {
     const { scl } = req.body || {};
-    if (!scl) return res.status(400).json({ error: "Missing scl" });
+    if (!scl || typeof scl !== "string") {
+      return res.status(400).json({ error: "Missing scl" });
+    }
 
     const blocks = extractBlocks(scl);
-    if (!blocks.length)
+    if (!blocks.length) {
       return res.status(400).json({ error: "No TIA blocks detected" });
+    }
 
     const zip = new JSZip();
 
-    // Jede Datei erzeugen
-    blocks.forEach(block => {
+    // SCL & XML je Block
+    blocks.forEach((block) => {
       zip.file(`${block.name}.scl`, sanitizeSCL(block.content));
       zip.file(`${block.name}.xml`, buildXml(block));
     });
 
     const symbols = extractSymbolTable(scl);
-    if (symbols) zip.file("Symboltabelle.csv", symbols);
+    if (symbols) {
+      zip.file("Symboltabelle.csv", symbols);
+    }
 
     const buffer = await zip.generateAsync({ type: "nodebuffer" });
 
@@ -162,10 +157,8 @@ export default async function handler(req, res) {
     );
 
     return res.status(200).send(buffer);
-
-  } catch (err) {
+  } catch (err: any) {
     console.error("EXPORT ERROR:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message || "Internal error" });
   }
 }
-
