@@ -6,3 +6,11 @@
     "openai": "^4.26.0"
   }
 }
+
+{
+  "name": "express-js-on-vercel",
+  "version": "1.0.0",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}
