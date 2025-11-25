@@ -1,6 +1,6 @@
-import JSZip from "jszip";
+import { OpenAI } from "openai";
 
-/* -------- BODY PARSER FÜR VERCEL PAGES API -------- */
+/* ---------- Body-Parser für Vercel Pages API ---------- */
 async function readBody(req) {
   return new Promise((resolve) => {
     let body = "";
@@ -15,62 +15,68 @@ async function readBody(req) {
   });
 }
 
-/* ============================================================
-   1) UMLAUT FILTER
-   ============================================================ */
-function sanitizeUmlauts(text) {
-  if (!text) return "";
-  return text
-    .replace(/ä/g, "ae")
-    .replace(/ö/g, "oe")
-    .replace(/ü/g, "ue")
-    .replace(/Ä/g, "Ae")
-    .replace(/Ö/g, "Oe")
-    .replace(/Ü/g, "Ue")
-    .replace(/ß/g, "ss");
-}
+export default async function handler(req, res) {
+  /* ---------- CORS ---------- */
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-/* ============================================================
-   2) BAUSTEIN-PARSER
-   ============================================================ */
-function splitSclIntoBlocks(fullText) {
-  const lines = fullText.split(/\r?\n/);
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-  const blocks = [];
-  let current = null;
-
-  for (let rawLine of lines) {
-    const line = rawLine.trimEnd();
-
-    const startMatch = line.match(
-      /^(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)\s+([A-Za-z0-9_]+)/
-    );
-
-    if (startMatch) {
-      if (current) blocks.push(current);
-
-      current = {
-        type: startMatch[1],
-        name: startMatch[2],
-        lines: [line]
-      };
-      continue;
-    }
-
-    if (current) {
-      current.lines.push(line);
-
-      if (/^END_/.test(line)) {
-        blocks.push(current);
-        current = null;
-      }
-    }
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      error: "Only POST allowed",
+    });
   }
 
-  return blocks;
-}
+  try {
+    /* ---------- Body einlesen ---------- */
+    const body = await readBody(req);
+    const prompt = body.prompt;
 
-/* ============================================================
-   3) XML GENERATOR FÜR TIA BLOCKTYPEN
-   ============================================================ */
-funct
+    if (!prompt || typeof prompt !== "string") {
+      return res.status(400).json({
+        error: "Field 'prompt' (string) is required",
+      });
+    }
+
+    /* ---------- OpenAI initialisieren ---------- */
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    /* 
+       WICHTIG:
+       Deine App erwartet "result: <SCL CODE>"
+       Darum geben wir exakt dieses Format zurück
+    */
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You generate Siemens TIA Portal SCL code in strict multi-block format.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.2,
+    });
+
+    const resultText = completion.choices[0].message.content || "";
+
+    return res.status(200).json({
+      result: resultText,
+    });
+  } catch (err) {
+    console.error("GENERATE ERROR:", err);
+
+    return res.status(500).json({
+      error: err.message || "Internal server error",
+    });
+  }
+}
