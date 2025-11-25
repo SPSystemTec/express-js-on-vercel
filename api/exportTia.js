@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import iconv from "iconv-lite";
 
 /**
  * SCL-Code ab dem ersten OB/FB/FC/DB heraus schneiden
@@ -10,10 +11,7 @@ function extractSclCode(fullText) {
     /(ORGANIZATION_BLOCK|FUNCTION_BLOCK|FUNCTION|DATA_BLOCK)/i.test(line)
   );
 
-  if (codeStartIndex === -1) {
-    return fullText;
-  }
-
+  if (codeStartIndex === -1) return fullText;
   return lines.slice(codeStartIndex).join("\r\n");
 }
 
@@ -86,41 +84,47 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
+  if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Only POST allowed" });
   }
 
   try {
     const { scl } = req.body || {};
-
     if (!scl || typeof scl !== "string") {
       return res.status(400).json({ error: "Field 'scl' (string) is required" });
     }
 
+    // SCL extrahieren
     const sclCode = extractSclCode(scl);
     const symbolCsv = extractSymbolTable(scl);
 
+    // NAME des Bausteins erkennen
     let fbName = "FB_Generiert";
     const fbMatch = scl.match(/FUNCTION_BLOCK\s+([A-Za-z0-9_]+)/i);
     if (fbMatch?.[1]) fbName = fbMatch[1];
 
     const fbXml = createFbXml(fbName, sclCode);
 
+    // NEU: UTF-8 → ANSI convertieren (Pflicht für TIA!)
+    const sclAnsi = iconv.encode(sclCode, "win1252");
+    const symbolAnsi = symbolCsv ? iconv.encode(symbolCsv, "win1252") : null;
+
+    // ZIP bauen
     const zip = new JSZip();
-    zip.file("SCL_Programm.scl", sclCode);
-    if (symbolCsv) zip.file("Symboltabelle.csv", symbolCsv);
+    zip.file("SCL_Programm.scl", sclAnsi);
+    if (symbolAnsi) zip.file("Symboltabelle.csv", symbolAnsi);
     zip.file(`FB_${fbName}.xml`, fbXml);
 
     const zipContent = await zip.generateAsync({ type: "nodebuffer" });
 
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", 'attachment; filename="TIA_Export_Profi_V19.zip"');
-    return res.status(200).send(zipContent);
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="TIA_Export_Profi_V19.zip"'
+    );
 
+    return res.status(200).send(zipContent);
   } catch (err) {
     console.error("EXPORT-TIA-XML ERROR:", err);
     return res.status(500).json({
